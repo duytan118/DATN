@@ -6,13 +6,10 @@
 #include <arduino_secrets.h>
 #include <Wire.h>
 #include <Adafruit_ADS1X15.h>
+#include <Ticker.h>
 
-Adafruit_ADS1115 ads;  // Tạo đối tượng ADS1115
-
-// Định nghĩa UART port
+Adafruit_ADS1115 ads;  
 HardwareSerial DWIN(2);
-
-// Định nghĩa địa chỉ và các pin
 
 #define MIN_ADD 0x52
 #define SEC_ADD 0x53
@@ -40,14 +37,15 @@ unsigned char Minute[8] = {0x5a, 0xa5, 0x05, 0x82, MIN_ADD , 0x00, 0x00, 0x00};
 unsigned char Second[8] = {0x5a, 0xa5, 0x05, 0x82, SEC_ADD, 0x00, 0x00, 0x00};
 unsigned char Temperature[8] = {0x5a, 0xa5, 0x05, 0x82, TEMP_ADD , 0x00, 0x00, 0x00};
 unsigned char Pressure[8] = {0x5a, 0xa5, 0x05, 0x82, PRES_ADD, 0x00, 0x00, 0x00};
-unsigned long previousMillis = 0;
-const long interval = 1000; // 1 giây
-int totalSeconds;
-int remainingMinutes;
+int minutes;  
+int flowRate;  
+float t;
+float p;
 int remainingSeconds;
-uint16_t minutes = 0;
-uint16_t seconds = 0;
-uint16_t flowRate = 0; 
+
+Ticker countdownTimer;
+Ticker sayOffTimer;
+Ticker xaOffTimer;
 
 ThingerESP32 thing(USERNAME, DEVICE_ID, DEVICE_CREDENTIAL);
 
@@ -55,7 +53,6 @@ void setup() {
   Serial.begin(115200); 
   thing.add_wifi(SSID, SSID_PASSWORD);
   DWIN.begin(115200, SERIAL_8N1, 16, 17); // RX -> 16, TX -> 17
-  Timer1.initialize(interval * 1000);
   temperature.begin();
   pinMode(QUAT, OUTPUT);
   pinMode(SAY, OUTPUT);
@@ -149,73 +146,43 @@ void setup() {
     }
   };
   thing["Pressure"] >> [](pson &out){
-    int16_t adc0 = ads.readADC_SingleEnded(0);
-    float voltage = adc0 * 0.1875 / 1000;  // ADS1115 có độ phân giải 0.1875mV/bit
-    float p = ((voltage - 0.5) * (10.0 / 4.5))*10;
-    out = p; // Read and send pressure sensor data
+    out = p; 
   };
 
   thing["Temperature"] >> [](pson &out){
-    temperature.requestTemperatures();
-    float t = temperature.getTempCByIndex(0);
     out = t; 
   };
 }
 
 void loop() {
-  requestDataFromDWIN(0x5000);
-  if (Buffer[0] == 0x5A && Buffer[1] == 0xA5) {
-    minutes = (Buffer[6] << 8) | Buffer[7]; // Lưu giá trị từ Buffer[6] và Buffer[7]
-    Serial.print("Minutes (0x5000): ");
-    Serial.println(minutes);
-  }
-  // Yêu cầu và lưu giá trị lưu lượng từ địa chỉ 0x5100
-  requestDataFromDWIN(0x5100);
-  if (Buffer[0] == 0x5A && Buffer[1] == 0xA5) {
-    flowRate = (Buffer[6] << 8) | Buffer[7]; // Lưu giá trị từ Buffer[6] và Buffer[7]
-    Serial.print("Flow Rate (0x5100): ");
-    Serial.println(flowRate);
-  }
-  delay(10); 
   sensor_write();
   delay(10);
   control_dwin();
   delay(100);
   thing.handle();
 }
-void updateTime() {
-  if (seconds == 0) {
-    if (minutes > 0) {
-      minutes--;
-      seconds = 59;
-    }
-  } else {
-    seconds--;
-  }
-
-  // Cập nhật màn hình với giá trị đếm ngược hiện tại
-  Minute[7] = minutes;
-  DWIN.write(Minute, 8);
-  Second[7] = seconds;
-  DWIN.write(Second, 8);
+float getTemperature() {
+  temperature.requestTemperatures(); 
+  float tempC = temperature.getTempCByIndex(0);
+  return tempC;
 }
-
+float getPressure() {
+  int16_t adc0 = ads.readADC_SingleEnded(0);  // Đọc giá trị từ kênh A0 của ADS1115
+  float voltage = adc0 * 0.1875 / 1000;  // ADS1115 có độ phân giải 0.1875mV/bit
+  float pressure = (voltage - 0.5) * (10.0 / 4.0);
+  return pressure;
+}
 void sensor_write() {
-  // Gửi dữ liệu nhiệt độ tới DWIN
-  temperature.requestTemperatures();
-  float t = temperature.getTempCByIndex(0);
+  t = getTemperature();
+  p = getPressure();
   Temperature[6] = highByte((int)t);
   Temperature[7] = lowByte((int)t);
   DWIN.write(Temperature, 8);
-  int16_t adc0 = ads.readADC_SingleEnded(0);
-  float voltage = adc0 * 0.1875 / 1000;  // ADS1115 có độ phân giải 0.1875mV/bit
-  float p = ((voltage - 0.5) * (10.0 / 4.5))*10;
-  // Gửi dữ liệu áp suất tới DWIN
+
   Pressure[6] = highByte((int)p);
   Pressure[7] = lowByte((int)p);
   DWIN.write(Pressure, 8);
 
-  // In dữ liệu lên Serial Monitor
   Serial.print("Temperature = ");
   Serial.print(t);
   Serial.println(" °C");
@@ -224,63 +191,95 @@ void sensor_write() {
   Serial.print(p);
   Serial.println(" bar");
   Serial.println();
-  delay(100);
+  delay(1000);
 }
-void changePage(uint8_t pageID) {
-    uint8_t changePage[8] = {0x5A, 0xA5, 0x07, 0x82, 0x00, 0x04, 0x00, 0x00};
-    changePage[7] = lowByte(pageID);
-    DWIN.write(changePage, 8);
+void readData() {
+  uint8_t command[6];
+
+  // Read minutes from 0x5000
+  command[0] = 0x5A;
+  command[1] = 0xA5;
+  command[2] = 0x03; // Length
+  command[3] = 0x83; // Read command
+  command[4] = 0x50;
+  command[5] = 0x00;
+  DWIN.write(command, 6);
+  delay(10);
+  if (DWIN.available() >= 8) {
+    for (int i = 0; i < 6; i++) DWIN.read();
+    minutes = (DWIN.read() << 8) | DWIN.read();
+  }
+  command[4] = 0x51;
+  command[5] = 0x00;
+  DWIN.write(command, 6);
+  delay(10);
+  if (DWIN.available() >= 8) {
+    for (int i = 0; i < 6; i++) DWIN.read(); 
+    flowRate = (DWIN.read() << 8) | DWIN.read();
+  }
+  remainingSeconds = minutes * 60;
+  Serial.print("Minutes: ");
+  Serial.println(minutes);
+  Serial.print("Flow Rate: ");
+  Serial.println(flowRate);
 }
-
-void requestDataFromDWIN(uint16_t address) {
-  uint8_t command[] = {0x5A, 0xA5, 0x03, 0x83, (uint8_t)(address >> 8), (uint8_t)(address & 0xFF)};
-
-  // Gửi lệnh đến DWIN qua UART
-  DWIN.write(command, sizeof(command));
-
-  // Đợi phản hồi từ DWIN
-  delay(50); // Đợi một chút để DWIN phản hồi
-
-  // Kiểm tra nếu có dữ liệu trả về
-  if (DWIN.available() > 0) {
-    for (int i = 0; i < 9; i++) {
-      Buffer[i] = DWIN.read();
-    }
+void countdown() {
+  if (remainingSeconds > 0) {
+    remainingSeconds--;
+    uint16_t minutesLeft = remainingSeconds / 60;
+    uint16_t secondsLeft = remainingSeconds % 60;
+    sendCountdownToDWIN(minutesLeft, secondsLeft);
+    analogWrite(EN_H2O2, flowRate);
+    analogWrite(EN_FECL3, flowRate);
+  } else {
+    countdownTimer.detach(); // Dừng bộ đếm thời gian khi hoàn thành
+    analogWrite(EN_H2O2, 0);
+    analogWrite(EN_FECL3, 0);
+    digitalWrite(XA, HIGH);
+    xaOffTimer.once(60, xaOff);
+    digitalWrite(SAY, HIGH);
+    sayOffTimer.once(60, sayOff); // Đặt bộ đếm thời gian để tắt SAY sau 60 giây
+    changePage(3);
   }
 }
+
+void sendCountdownToDWIN(uint16_t minutes, uint16_t seconds) {
+  Minute[6] = highByte(minutes);
+  Minute[7] = lowByte(minutes);
+  Second[6] = highByte(seconds);
+  Second[7] = lowByte(seconds);
+  DWIN.write(Minute, 8);
+  DWIN.write(Second, 8);
+  Serial.print("Countdown: ");
+  Serial.print(minutes);
+  Serial.print(":");
+  if (seconds < 10) Serial.print("0");
+  Serial.println(seconds);
+}
+
 void startProcess() {
-  temperature.requestTemperatures();
-  float t = temperature.getTempCByIndex(0);
-  int16_t adc0 = ads.readADC_SingleEnded(0);
-  float voltage = adc0 * 0.1875 / 1000;  // ADS1115 có độ phân giải 0.1875mV/bit
-  float p = ((voltage - 0.5) * (10.0 / 4.5))*10;
-  // Đuổi khí
-  Serial.println("Start process: Bật bơm khí H2O2 và FeCl3, và xả");
   digitalWrite(QUAT, HIGH);
   digitalWrite(PLASMA1, HIGH);
   digitalWrite(PLASMA2, HIGH);
   digitalWrite(IN_H2O2_1, HIGH);
   digitalWrite(IN_H2O2_2, LOW);
-  analogWrite(EN_H2O2, 255); 
+  analogWrite(EN_H2O2, 255);
   digitalWrite(IN_FECL3_1, HIGH);
   digitalWrite(IN_FECL3_2, LOW);
-  analogWrite(EN_FECL3, 255); 
+  analogWrite(EN_FECL3, 255);
   digitalWrite(XA, HIGH);
-  delay(60000);
-  digitalWrite(XA, LOW);
-  analogWrite(EN_H2O2, flowRate);
-  analogWrite(EN_FECL3, flowRate);
-  if(p>7)
-  delay(minutes*60000);
-  analogWrite(EN_H2O2, 0);
-  analogWrite(EN_FECL3, 0);
-  
-
-
-  
-  // Gọi hàm cập nhật thời gian đếm ngược
-  updateTime();
+  xaOffTimer.once(60, xaOff); // Đặt bộ đếm thời gian để tắt XA sau 60 giây
+  countdownTimer.attach(1, countdown); // Gọi hàm countdown mỗi giây
 }
+
+void xaOff() {
+  digitalWrite(XA, LOW);
+}
+
+void sayOff() {
+  digitalWrite(SAY, LOW);
+}
+
 
 void off(){
   digitalWrite(QUAT, LOW);
@@ -305,6 +304,11 @@ void stop() {
   digitalWrite(IN_FECL3_1, LOW);
   digitalWrite(IN_FECL3_2, LOW);
 }
+void changePage(uint8_t pageID) {
+    uint8_t changePage[8] = {0x5A, 0xA5, 0x05, 0x82, 0x00, 0x04, 0x00, 0x00};
+    changePage[7] = lowByte(pageID);
+    DWIN.write(changePage, 8);
+}
 
 void control_dwin()
 {
@@ -320,24 +324,24 @@ void control_dwin()
       uint16_t addr = (Buffer[4] << 8) | Buffer[5];
       switch (addr)
       {
-        case 0x6500:   
+        case 0x6500:   // Start auto
           if (Buffer[8] == 0x01) {
-            
+          startProcess();
           }
           break;
 
-        case 0x6400:
+        case 0x6400: // off
           if (Buffer[8] == 0x01) {
             off();
           }
           break;
 
-        case 0x6600:  
+        case 0x6600:  //stop
           if (Buffer[8] == 0x01) {
             stop();
           }
           break;
-
+// manual
         case 0x6510:   
           if (Buffer[8] == 0x01) {
             digitalWrite(PLASMA1, HIGH);
