@@ -130,18 +130,20 @@ void setup() {
   };
   thing["H2O2_Pump"] << [](pson &in){
     if(in.is_empty()){
-      in = digitalRead(IN_H2O2_1);
+        in = digitalRead(IN_H2O2_1);
     }
     else{
-      digitalWrite(IN_H2O2_1, in ? HIGH : LOW);
+        digitalWrite(IN_H2O2_1, in ? HIGH : LOW);
+        analogWrite(EN_H2O2, in ? 255 : 0); // Bật (255) hoặc Tắt (0) EN_H2O2 tương ứng với giá trị của in
     }
   };
   thing["FeCl3_Pump"] << [](pson &in){
     if(in.is_empty()){
-      in = digitalRead(IN_FECL3_1);
+        in = digitalRead(IN_FECL3_1);
     }
     else{
-      digitalWrite(IN_FECL3_1, in ? HIGH : LOW);
+        digitalWrite(IN_FECL3_1, in ? HIGH : LOW);
+        analogWrite(EN_FECL3, in ? 255 : 0); // Bật (255) hoặc Tắt (0) EN_FECL3 tương ứng với giá trị của in
     }
   };
   thing["Pressure"] >> [](pson &out){
