@@ -7,7 +7,6 @@
 #include <Wire.h>
 #include <Adafruit_ADS1X15.h>
 #include <Ticker.h>
-
 Adafruit_ADS1115 ads;  
 HardwareSerial DWIN(2);
 
@@ -166,12 +165,14 @@ float getTemperature() {
   float tempC = temperature.getTempCByIndex(0);
   return tempC;
 }
+
 float getPressure() {
   int16_t adc0 = ads.readADC_SingleEnded(0);  // Đọc giá trị từ kênh A0 của ADS1115
   float voltage = adc0 * 0.1875 / 1000;  // ADS1115 có độ phân giải 0.1875mV/bit
   float pressure = (voltage - 0.5) * (10.0 / 4.0);
   return pressure;
 }
+
 void sensor_write() {
   t = getTemperature();
   p = getPressure();
@@ -229,8 +230,6 @@ void countdown() {
     uint16_t minutesLeft = remainingSeconds / 60;
     uint16_t secondsLeft = remainingSeconds % 60;
     sendCountdownToDWIN(minutesLeft, secondsLeft);
-    analogWrite(EN_H2O2, flowRate);
-    analogWrite(EN_FECL3, flowRate);
   } else {
     countdownTimer.detach(); // Dừng bộ đếm thời gian khi hoàn thành
     analogWrite(EN_H2O2, 0);
@@ -269,6 +268,8 @@ void startProcess() {
   analogWrite(EN_FECL3, 255);
   digitalWrite(XA, HIGH);
   xaOffTimer.once(60, xaOff); // Đặt bộ đếm thời gian để tắt XA sau 60 giây
+  analogWrite(EN_H2O2, flowRate);
+  analogWrite(EN_FECL3, flowRate);
   countdownTimer.attach(1, countdown); // Gọi hàm countdown mỗi giây
 }
 
